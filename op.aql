@@ -1,0 +1,67 @@
+# Disjoint smart graph needs a shard key
+
+# shardKey 2 char
+# global collection moves
+
+LET oldOwnerId = "inventories/SO:ownerId" 
+LET OldInventoryId = "inventories/SO:objectId"
+LET oldEdgeId = "stows/SO:edgeId:SO"
+
+LET newInventoryId = "inventories/TA:objectId"
+LET newOwnerId = "inventories/TA:ownerId"
+
+// Transaction
+//Process is started with this insert asynchronously and ends, when removed
+UPDATE { _id: oldEdgeId, to_: newInventoryId } IN stows
+INSERT { _from:  newOwnerId, _to: newInventoryId, to_: oldOwnerId, shardKey: "TA" } IN stows
+INSERT { source: oldInventoryId, target: newInventoryId, checkpoint: 0 } INTO moves
+
+
+// Transaction
+// Copy sub graph expire origin
+LET payload = (FOR v,e IN 1..100 INBOUND GRAPH entityGraph oldInventoryId RETURN {v, e}) // this is on the move
+FOR v IN payload.v
+  INSERT MERGE(UNSET(v, "_key", "shardKey"), {_key: CONCAT("TA:", SUBSTRING(v._key, 2)), shardKey: "TA"}) INTO inventories
+FOR e IN payload.e
+  INSERT
+    MERGE(
+      UNSET(v, "_key", "to_", "_to", "_from"),
+      {_to: CONCAT("TA", SUBSTRING(e._to, 2)),
+      _from: CONCAT("TA", SUBSTRING(e._from, 2))}
+      shardKey: TA)
+  INTO stows
+OPTIONS: forceOneShardAttributeValue("TA")
+// check point update
+INSERT { source: oldInventoryId, target: newInventoryId, checkpoint: 1 } INTO moves
+
+//Transaction
+// Copy sub graph expire origin
+LET payload = (FOR v,e IN 1..100 OUTBOUND GRAPH graph oldInventoryId RETURN {v, e})
+FOR v IN payload.v UPDATE { _key: v._key, ttl: DATE_NOW(), 12, "hours"} IN inventories
+FOR v IN payload.e UPDATE { _key: v._key, ttl: DATE_NOW(), 12, "hours"} IN stows
+REMOVE ( {_key : "inventories/SO:objectId_"inventories/TA:objectId"})
+// check point update
+INSERT { source: oldInventoryId, target: newInventoryId, checkpoint: 2} INTO moves
+
+
+1. create job _api/move?oldInventoryId=1&newOwnerId
+
+
+trans
+INSERT moves // (?)ttl 
+UPDATE {_key:von, to_:"newLoc"}
+UPDATE {_key:newKey, from_:"von"}
+report 0
+commit -> report to game
+
+      traversals alte stelle to_ : null
+      traversals new stelle from_ : one more traversal 
+
+trans
+copy in background
+report 1
+commit
+
+trans
+ttl prepare deletion for minimal effect on system
+commit
